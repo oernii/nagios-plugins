@@ -1,0 +1,229 @@
+#!/usr/bin/python
+#./check_zabbix
+
+# set shiftwidth=2
+# set softtabstop=2
+# set tabstop=2
+
+#
+# this is a zabbix2nagios bridge
+#
+# it tries to fetch trigger data from zabbix via URL (zabbix-api JSON) and output a cool nagios alert
+#
+# some of the code is stolen from https://github.com/gescheit/scripts/blob/master/zabbix/zabbix_api.py
+#
+# this is their original header:
+#
+
+########################################################################################
+#                                                                                      #
+# This is a port of the ruby zabbix api found here:                                    #
+# http://trac.red-tux.net/browser/ruby/api/zbx_api.rb                                  #
+#                                                                                      #
+#LGPL 2.1 http://www.gnu.org/licenses/old-licenses/lgpl-2.1.html                       #
+#Zabbix API Python Library.                                                            #
+#Original Ruby Library is Copyright (C) 2009 Andrew Nelson nelsonab(at)red-tux(dot)net #
+#Python Library is Copyright (C) 2009 Brett Lentz brett.lentz(at)gmail(dot)com         #
+#                                                                                      #
+#This library is free software; you can redistribute it and/or                         #
+#modify it under the terms of the GNU Lesser General Public                            #
+#License as published by the Free Software Foundation; either                          #
+#version 2.1 of the License, or (at your option) any later version.                    #
+#                                                                                      #
+#This library is distributed in the hope that it will be useful,                       #
+#but WITHOUT ANY WARRANTY; without even the implied warranty of                        #
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU                      #
+#Lesser General Public License for more details.                                       #
+#                                                                                      #
+#You should have received a copy of the GNU Lesser General Public                      #
+#License along with this library; if not, write to the Free Software                   #
+#Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA          #
+#                                                                                      #
+# The API requires zabbix 1.8 or later.                                                #
+# Currently, not all of the API is implemented, and some functionality is              #
+# broken. This is a work in progress.                                                  #
+#                                                                                      #
+########################################################################################
+
+#
+# as the original code my code is LGPL2.1
+#
+
+import os
+import sys
+import getopt
+import pprint
+
+try:
+  import urllib2
+except ImportError:
+  import urllib.request as urllib2 # python3
+
+try:
+    import simplejson as json
+except ImportError:
+    import json
+
+## constants from https://www.nagios-plugins.org/doc/guidelines.html#AEN78
+
+#
+# The plugin was able to check the service and it appeared to be functioning properly
+#
+# return this if zabbix does not have any open issues (ie no trigger fire)
+#
+NAGIOS_OK_RC = 0
+NAGIOS_OK_STR = "ZABBIX OK"
+
+#
+# The plugin was able to check the service,
+# but it appeared to be above some "warning" threshold
+# or did not appear to be working properly
+#
+# in our case this means zabbix triggers below "High"
+#
+NAGIOS_WARNING_RC  = 1
+NAGIOS_WARNING_STR = "ZABBIX WARNING"
+
+#
+# The plugin detected that either the service was not running
+# or it was above some "critical" threshold
+#
+# in our case this means zabbix triggers High and Disaster
+#
+NAGIOS_CRITICAL_RC = 2
+NAGIOS_CRITICAL_STR = "ZABBIX CRITICAL"
+
+#
+# Invalid command line arguments were supplied to the plugin
+# or low-level failures internal to the plugin
+# (such as unable to fork, or open a tcp socket)
+# that prevent it from performing the specified operation.
+#
+# Higher-level errors (such as name resolution errors, socket timeouts, etc) 
+# are outside of the control of plugins and should generally NOT be reported as UNKNOWN states.
+#
+# this is the status if the configuration is unreachable
+#
+NAGIOS_UNKNOWN_RC = 3
+NAGIOS_UNKNOWN_STR = "ZABBIX UNKNOWN"
+
+# zabbix api id (increment this for every call)
+ID = 0
+
+# http headers
+HEADERS = {
+            'Content-Type': 'application/json-rpc',
+              'User-Agent': 'check_zabbix.py'
+          }
+
+## functions
+
+def login(url, CHECK_ZABBIX_USER, CHECK_ZABBIX_PASS):
+  global ID
+
+  ID += 1
+
+  authdata =  {
+                "jsonrpc": "2.0",
+                 "method": "user.login",
+
+                 "params":
+                           {
+                                  "user": CHECK_ZABBIX_USER,
+                              "password": CHECK_ZABBIX_PASS,
+                           },
+
+                     "id": ID,
+              }
+
+  req = urllib2.Request(url=url, data=json.dumps(authdata).encode('utf-8'), headers=HEADERS)
+
+  return json.loads(urllib2.urlopen(req).read().decode('utf-8'))['result']
+
+def check_for_triggers(url, authkey, min_severity):
+  global ID
+
+  ID += 1
+
+  triggerdata = {
+                  "jsonrpc": "2.0",
+                  "method": "trigger.get", # https://www.zabbix.com/documentation/2.0/manual/appendix/api/trigger/get
+
+                   "params": {
+                     "only_true": "true",   # Return only triggers that have recently been in a problem state.
+                     "monitored": "true",   # Return only enabled triggers that belong to monitored hosts and contain only enabled items.
+                     "output": "extend",
+                     "selectLastEvent:": [ "eventid", "acknowledged" ],
+                     "maintenance": "false",
+                     "withLastEventUnacknowledged": "true",
+                     "expandData": "true",
+                     "min_severity": min_severity,
+                     "filter":
+                       {
+                         "value": "1",
+                      },
+                  },
+                  "auth": authkey,
+                  "id": ID,
+                }
+
+  req = urllib2.Request(url=url, data=json.dumps(triggerdata).encode('utf-8'), headers=HEADERS)
+
+  return json.loads(urllib2.urlopen(req).read().decode('utf-8'))['result']
+
+def print_results(res, nl="\n"):
+  pp = pprint.PrettyPrinter(indent=4)
+  ret = ''
+  for trigger in res:
+    ret += "  " + trigger['hostname'] + ": " + trigger['description'] + " - PRIO:" + trigger['priority'] + nl
+  return ret
+
+def showtriggers(zabbix_url, CHECK_ZABBIX_USER, CHECK_ZABBIX_PASS):
+  url = zabbix_url + "/api_jsonrpc.php"
+
+  # login to get an auth key
+  authkey = login(url, CHECK_ZABBIX_USER, CHECK_ZABBIX_PASS)
+
+  # check for triggers high, disaster
+  result = check_for_triggers(url, authkey, 4)
+  if result == []:
+
+    # check for triggers information, warning
+    result = check_for_triggers(url, authkey, 2)
+    if result == []:
+      print NAGIOS_OK_STR +      " - no zabbix triggers at "           + zabbix_url + "/dashboard.php"
+      print print_results(result)
+      sys.exit(NAGIOS_OK_RC)
+    else:
+      print NAGIOS_WARNING_STR + print_results(result, '')
+      print print_results(result)
+      sys.exit(NAGIOS_WARNING_RC)
+  else:
+    print NAGIOS_CRITICAL_STR +  print_results(result, '') 
+    print print_results(result)
+    sys.exit(NAGIOS_CRITICAL_RC)
+
+## main
+
+def main(argv):
+  try:
+     opts, args = getopt.getopt(argv,"u:U:P:",["url=","username=","password="])
+  except getopt.GetoptError:
+     print 'test.py -i <inputfile> -o <outputfile>'
+     sys.exit(2)
+  for opt, arg in opts:
+     if opt == '-h':
+        print 'test.py -i <inputfile> -o <outputfile>'
+        sys.exit()
+     elif opt in ("-u", "--url"):
+        url = arg
+     elif opt in ("-U", "--username"):
+        CHECK_ZABBIX_USER = arg
+     elif opt in ("-P", "--password"):
+        CHECK_ZABBIX_PASS = arg
+
+  showtriggers(url, CHECK_ZABBIX_USER, CHECK_ZABBIX_PASS)
+
+if __name__ == "__main__":
+   main(sys.argv[1:])
+

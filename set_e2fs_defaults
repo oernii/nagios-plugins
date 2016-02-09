@@ -1,0 +1,41 @@
+#!/bin/bash
+# $Id: set_e2fs_defaults,v 1.1 2014/02/05 08:00:19 oernii Exp $
+# Author: Ernest Beinrohr, AXON PRO, 2010, Ernest.Beinrohr@axonpro.sk
+# Licence: GPL 3
+#  Patches: Giles.Westwood@semantico.com
+# test
+
+PATH=$PATH:/sbin
+DEVS=`egrep "ext2|ext3|ext4" /etc/mtab|cut -f 1 -d " " | tr '\n' ' '`
+HOST=`hostname`
+INTERVAL_DEFAULT=365
+COUNT_DEFAULT=50
+
+for DEV in $DEVS
+do
+    FSTYPE=$(grep $DEV /etc/mtab | gawk '{print $3}')
+    if [ x$FSTYPE == "xext4" -a -f /sbin/dumpe4fs ]; then
+        DUMPEFS="dumpe4fs"
+	TUNE2FS="tune4fs"
+    else
+        DUMPEFS="dumpe2fs"
+	TUNE2FS="tune2fs"
+    fi
+    INTERVAL=`$DUMPEFS -h $DEV 2>&1| grep '^Check interval'|cut -f2 -d:|cut -f 1 -d\(`
+    MAX_COUNT=`$DUMPEFS -h $DEV 2>&1| grep '^Maximum mount count'|cut -f2 -d:`
+
+    # interval check
+    if [[ $INTERVAL -eq 0 ]]
+    then
+	$TUNE2FS -i $INTERVAL_DEFAULT $DEV
+	echo "$DEV check interval is not defined. Setting to $INTERVAL_DEFAULT"
+    fi
+    
+    # max count check
+    if [[ $MAX_COUNT -lt 0 ]]
+    then
+	$TUNE2FS -c $COUNT_DEFAULT $DEV
+	echo "$DEV max mount count is not defined. Setting to $COUNT_DEFAULT "
+    fi
+    
+done

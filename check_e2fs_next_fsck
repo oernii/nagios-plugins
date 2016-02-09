@@ -1,0 +1,84 @@
+#!/bin/bash
+# $Id: check_e2fs_next_fsck,v 1.16 2014/02/05 08:00:30 oernii Exp $
+# Author: Ernest Beinrohr, AXON PRO, 2010, Ernest.Beinrohr@axonpro.sk
+# Licence: GPL 3
+#  Patches: Giles.Westwood@semantico.com
+# test
+
+PATH=$PATH:/sbin
+DEVS=`egrep "ext2|ext3|ext4" /etc/mtab|cut -f 1 -d " " | tr '\n' ' '`
+WARNINGS=""
+ERRORS=""
+HOST=`hostname`
+WARN_DAYS=7
+MAX_INODE_COUNT=50000 # devices with less than this inodes are not checked
+
+for DEV in $DEVS
+do
+    FSTYPE=$(grep $DEV /etc/mtab | gawk '{print $3}')
+    if [ x$FSTYPE == "xext4" -a -f /sbin/dumpe4fs ]; then
+        DUMPEFS="dumpe4fs"
+    else
+        DUMPEFS="dumpe2fs"
+    fi
+    COUNT=`$DUMPEFS -h $DEV 2>&1| grep '^Mount count'|cut -f2 -d:`
+    INTERVAL=`$DUMPEFS -h $DEV 2>&1| grep '^Check interval'|cut -f2 -d:|cut -f 1 -d\(`
+    MAX_COUNT=`$DUMPEFS -h $DEV 2>&1| grep '^Maximum mount count'|cut -f2 -d:`
+    NEXT_STRING=`$DUMPEFS -h $DEV 2>&1| grep '^Next check after'|cut -f2- -d:`
+    INODE_COUNT=`$DUMPEFS -h $DEV 2>&1| grep '^Inode count'|cut -f2 -d:`
+    NEXT=`date --utc --date "$NEXT_STRING" +%s`
+    NOW=`date --utc +%s`
+
+    # control count, control time
+    let COUNT2=COUNT+1
+    let NEXT2=NEXT-`echo $WARN_DAYS*24*3600|bc`
+
+    # interval check
+    if [[ $INTERVAL -eq 0 ]]
+    then
+	WARNINGS="$WARNINGS $DEV check interval is not defined (consider running: /opt/bin/set_e2fs_defaults); "
+    fi
+    
+    # max count check
+    if [[ $MAX_COUNT -lt 0 ]]
+    then
+	WARNINGS="$WARNINGS $DEV max mount count is not defined (consider running: /opt/bin/set_e2fs_defaults); "
+    fi
+    
+    # count check
+    if [[ $COUNT -ge $MAX_COUNT && $MAX_COUNT -ne -1 && $INODE_COUNT -ge $MAX_INODE_COUNT ]]
+    then
+        ERRORS="$ERRORS $DEV mountCount=$MAX_COUNT, next restart causes FSCK !!; "
+    fi
+    if [[ $COUNT2 -ge $MAX_COUNT && $MAX_COUNT -ne -1 ]]
+    then
+        WARNINGS="$WARNINGS $DEV mountCount is $COUNT of Max:$MAX_COUNT. Run fsck while you can !! ; "
+    fi
+
+    # time check
+    if [[ $NOW -ge $NEXT && $NEXT_STRING != "" && $INODE_COUNT -ge $MAX_INODE_COUNT ]]
+    then
+        ERRORS="$ERRORS $DEV next fsck check time is in the past ($NEXT_STRING), next restart causes FSCK !! ;  "
+    fi
+    if [[ $NOW -ge $NEXT2 && $NEXT_STRING != "" ]]
+    then
+        WARNINGS="$WARNINGS $DEV next fsck check is in $NEXT_STRING. Run fsck while you can !! ;  "
+    fi
+done
+
+if [[ $ERRORS != "" ]]
+then
+    echo "ERROR: $HOST: $ERRORS"
+    echo ""
+    echo "$ERRORS" | sed -e 's/;/\n/g'
+    exit 2
+elif [[ $WARNINGS != "" ]]
+then
+    echo "WARNING: $HOST: $WARNINGS"
+    echo ""
+    echo "$WARNINGS" | sed -e 's/;/\n/g'
+    exit 1
+else
+    echo "OK, filesystems $DEVS are fsck safe"
+fi
+

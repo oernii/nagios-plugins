@@ -1,0 +1,3 @@
+check_e2fs_next_fsck  - Warning on pending FSCK check on ext2/3/4 filesystem
+check_smart_all_disks - Shows warnings on common SMART disk problems
+check_zabbix          - Check zabbix server for it's issues. Ignores hosts in maintenance and ack'd. Source from https://github.com/gescheit/scripts
