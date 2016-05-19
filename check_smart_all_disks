@@ -1,6 +1,8 @@
 #!/bin/bash
 # $Id: check_smart_all_disks,v 1.23 2014/03/10 10:48:06 oernii Exp $
 
+[[ $(id -u) -ne 0 ]] && echo "$0 needs to run as root to read SMART data." && exit 3
+
 DEVS=`find /dev/disk/by-id/ -iname '*ata*' -and -not -iname '*part*' -and -not -iname '*QEMU_DVD-ROM*' -ls | gawk  '{print $13}' | cut -f3 -d/ | sed -e 's/\(.*\)/\/dev\/\1/'|sort -u`
 DEVS=`echo $DEVS`
 
@@ -137,6 +139,7 @@ then
 	/bin/rm $OUT $NAGIOS_OUTPUT
 	exit 1
 else
+	/bin/rm $OUT $NAGIOS_OUTPUT 
 	echo "OK, no SMART errors found on $DEVS"
 fi
 
